@@ -5,9 +5,75 @@ from functools import lru_cache
 from g2p_en import G2p
 
 
+def _resource_exists(nltk_module, resource_paths: tuple[str, ...]) -> bool:
+    for resource_path in resource_paths:
+        try:
+            nltk_module.data.find(resource_path)
+        except LookupError:
+            continue
+        else:
+            return True
+    return False
+
+
+def _ensure_nltk_resource(
+    nltk_module,
+    *,
+    resource_paths: tuple[str, ...],
+    download_names: tuple[str, ...],
+) -> None:
+    if _resource_exists(nltk_module, resource_paths):
+        return
+
+    download_errors: list[str] = []
+    for download_name in download_names:
+        try:
+            download_succeeded = bool(nltk_module.download(download_name, quiet=True))
+        except Exception as error:  # pragma: no cover - defensive guard for downloader failures
+            download_errors.append(f"{download_name}: {error}")
+            continue
+
+        if download_succeeded and _resource_exists(nltk_module, resource_paths):
+            return
+
+        status = "download returned false" if not download_succeeded else "resource still missing after download"
+        download_errors.append(f"{download_name}: {status}")
+
+    attempted_downloads = ", ".join(download_errors) if download_errors else "no downloads were attempted"
+    raise LookupError(
+        "Required NLTK resources are unavailable. "
+        f"Checked {resource_paths} and attempted {attempted_downloads}."
+    )
+
+
+@lru_cache(maxsize=1)
+def ensure_nltk_resources() -> None:
+    import nltk
+
+    _ensure_nltk_resource(
+        nltk,
+        resource_paths=("corpora/cmudict",),
+        download_names=("cmudict",),
+    )
+    _ensure_nltk_resource(
+        nltk,
+        resource_paths=(
+            "taggers/averaged_perceptron_tagger_eng",
+            "taggers/averaged_perceptron_tagger",
+        ),
+        download_names=(
+            "averaged_perceptron_tagger_eng",
+            "averaged_perceptron_tagger",
+        ),
+    )
+
+
 @lru_cache(maxsize=1)
 def get_g2p() -> G2p:
-    return G2p()
+    ensure_nltk_resources()
+    g2p = G2p()
+    g2p("warmup")
+    return g2p
 
 
 @lru_cache(maxsize=256)
