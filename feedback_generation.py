@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from functools import lru_cache
 from typing import TypedDict
 
 from groq import Groq
@@ -73,52 +74,65 @@ def build_payload_description(target_text: str, scoring_payload: ScoringPayload)
         scoring_payload["phoneme_results"],
         key=lambda result: result["phoneme_score"],
     )[:6]
-    phoneme_lines = []
-    for result in weakest_phoneme_results:
-        phoneme_lines.append(
-            (
-                f"Word '{result['word']}', expected phoneme {result['expected_phoneme']}, "
-                f"predicted phoneme {result['predicted_phoneme']}, error type {result['error_type']}, "
-                f"severity {result['severity']}, confidence {result['confidence_score']:.2f}, "
-                f"phoneme score {result['phoneme_score']:.2f}."
-            )
-        )
 
     weakest_word_scores = sorted(
         scoring_payload["word_scores"],
         key=lambda word_score: word_score["weighted_score"],
     )[:4]
-    word_lines = []
-    for word_score in weakest_word_scores:
-        word_lines.append(
-            (
-                f"Word '{word_score['word']}' has score {word_score['weighted_score']:.2f} "
-                f"and band {word_score['performance_band']}."
-            )
-        )
 
-    return "\n".join(
-        [
-            f"Target text: {target_text}.",
-            f"Overall score: {scoring_payload['overall_score']:.2f}.",
-            f"Performance band: {scoring_payload['performance_band']}.",
-            "Word-level results:",
-            *word_lines,
-            "Phoneme-level results:",
-            *phoneme_lines,
-        ]
+    assessment_context = {
+        "target_text": target_text,
+        "overall_score": round(float(scoring_payload["overall_score"]), 2),
+        "performance_band": scoring_payload["performance_band"],
+        "weak_words": [
+            {
+                "word": word_score["word"],
+                "score": round(float(word_score["weighted_score"]), 2),
+                "average_confidence": round(float(word_score["average_confidence"]), 2),
+                "phoneme_count": int(word_score["phoneme_count"]),
+                "band": word_score["performance_band"],
+            }
+            for word_score in weakest_word_scores
+        ],
+        "weak_phonemes": [
+            {
+                "word": result["word"],
+                "expected": result["expected_phoneme"],
+                "predicted": result["predicted_phoneme"],
+                "error": result["error_type"],
+                "severity": result["severity"],
+                "confidence": round(float(result["confidence_score"]), 2),
+                "score": round(float(result["phoneme_score"]), 2),
+                "importance_weight": round(float(result["importance_weight"]), 2),
+            }
+            for result in weakest_phoneme_results
+        ],
+    }
+
+    return json.dumps(
+        assessment_context,
+        separators=(",", ":"),
+        ensure_ascii=True,
     )
 
 
 def build_user_prompt(target_text: str, scoring_payload: ScoringPayload) -> str:
     payload_description = build_payload_description(target_text, scoring_payload)
     return (
-        "Use the following pronunciation assessment results to generate concise, actionable, "
-        "and encouraging feedback for the learner in the required JSON format.\n\n"
-        f"{payload_description}\n\n"
-        "Focus on the most important pronunciation issues, keep the response compact, "
-        "and return only valid JSON."
+        "Use the pronunciation assessment JSON below to coach the learner.\n"
+        "Ground every point in the provided scores and phoneme errors.\n"
+        "Mention only real weaknesses supported by the data.\n"
+        "Prioritize the lowest-scoring phonemes and weakest words.\n"
+        "Do not describe a phoneme as incorrect when the expected and predicted values match or the error is 'none'.\n"
+        "Make the advice specific, practical, and natural-sounding.\n"
+        "Return only valid JSON in the required schema.\n"
+        f"{payload_description}"
     )
+
+
+@lru_cache(maxsize=1)
+def get_groq_client() -> Groq:
+    return Groq(api_key=settings.groq_api_key)
 
 
 def build_fallback_feedback(target_text: str, scoring_payload: ScoringPayload) -> FeedbackPayload:
@@ -172,11 +186,10 @@ def build_fallback_feedback(target_text: str, scoring_payload: ScoringPayload) -
 
 
 def _call_groq(target_text: str, scoring_payload: ScoringPayload) -> FeedbackPayload:
-    client = Groq(api_key=settings.groq_api_key)
-    response = client.chat.completions.create(
+    response = get_groq_client().chat.completions.create(
         model=settings.groq_model,
-        temperature=0.3,
-        max_completion_tokens=180,
+        temperature=0.15,
+        max_completion_tokens=220,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_user_prompt(target_text, scoring_payload)},

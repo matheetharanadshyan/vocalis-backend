@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import ModuleType, SimpleNamespace
 
 
@@ -97,6 +98,32 @@ def test_build_fallback_feedback_returns_rule_based_payload(load_backend_module)
     assert payload["feedback_model"] == "rule-based"
     assert len(payload["action_items"]) == 2
     assert "think" in payload["summary"]
+
+
+def test_build_payload_description_returns_grounded_assessment_json(load_backend_module) -> None:
+    feedback_generation = build_feedback_module(load_backend_module)
+
+    payload_description = feedback_generation.build_payload_description("think", sample_scoring_payload())
+    parsed = json.loads(payload_description)
+
+    assert parsed["target_text"] == "think"
+    assert parsed["performance_band"] == "Needs More Practice"
+    assert parsed["weak_words"][0]["average_confidence"] == 0.69
+    assert parsed["weak_words"][0]["phoneme_count"] == 2
+    assert parsed["weak_phonemes"][0]["confidence"] == 0.45
+    assert parsed["weak_phonemes"][0]["importance_weight"] == 1.35
+    assert len(parsed["weak_phonemes"]) <= 6
+    assert len(parsed["weak_words"]) <= 4
+
+
+def test_build_user_prompt_includes_grounding_rules(load_backend_module) -> None:
+    feedback_generation = build_feedback_module(load_backend_module)
+
+    prompt = feedback_generation.build_user_prompt("think", sample_scoring_payload())
+
+    assert "Ground every point in the provided scores and phoneme errors." in prompt
+    assert "Do not describe a phoneme as incorrect" in prompt
+    assert '"target_text":"think"' in prompt
 
 
 def test_call_groq_parses_structured_json_response(load_backend_module) -> None:

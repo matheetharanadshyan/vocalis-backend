@@ -548,6 +548,11 @@ async def pronunciation_socket(websocket: WebSocket) -> None:
             if not sent:
                 return
 
+            async def notify_assessment_progress(payload: dict) -> None:
+                stage_sent = await safe_send_json(websocket, payload)
+                if not stage_sent:
+                    raise WebSocketDisconnect
+
             assessment = await assess_pronunciation(
                 audio_bytes=audio_bytes,
                 current_target_text=current_target_text,
@@ -559,6 +564,7 @@ async def pronunciation_socket(websocket: WebSocket) -> None:
                 alignment_semaphore=alignment_semaphore,
                 phoneme_model_semaphore=phoneme_model_semaphore,
                 feedback_semaphore=feedback_semaphore,
+                progress_notifier=notify_assessment_progress,
             )
             processed = assessment["processed"]
             alignment = assessment["alignment"]
@@ -566,17 +572,7 @@ async def pronunciation_socket(websocket: WebSocket) -> None:
             phoneme_model_payload = assessment["phoneme_model_payload"]
             scoring_payload = assessment["scoring_payload"]
             feedback_payload = assessment["feedback_payload"]
-
-            sent = await safe_send_json(
-                websocket,
-                {
-                    "type": "audio.aligning",
-                    "message": "Backend Aligning Target Text...",
-                    "stage": "alignment",
-                },
-            )
-            if not sent:
-                return
+            timings = assessment["timings"]
 
             sent = await safe_send_json(
                 websocket,
@@ -613,6 +609,7 @@ async def pronunciation_socket(websocket: WebSocket) -> None:
                     "phoneme_model_error": phoneme_model_payload["phoneme_model_error"],
                     "model_quantized": alignment["model_quantized"],
                     "model_device": alignment["model_device"],
+                    "processing_timings": timings,
                 },
             )
             if not sent:
