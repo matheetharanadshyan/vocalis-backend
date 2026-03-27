@@ -11,6 +11,32 @@ from personalization_repository import (
 from target_texts import TargetTextManager
 
 
+def derive_attempt_focus_phonemes(phoneme_results: list[dict], limit: int = 3) -> list[str]:
+    ranked_results = sorted(
+        (
+            result
+            for result in phoneme_results
+            if str(result.get("error_type", "none")) != "none" or float(result.get("phoneme_score", 1.0)) < 0.75
+        ),
+        key=lambda result: (
+            float(result.get("phoneme_score", 0.0)),
+            -float(result.get("severity_score", 0.0)),
+            -float(result.get("importance_weight", 0.0)),
+        ),
+    )
+
+    focus_phonemes: list[str] = []
+    for result in ranked_results:
+        phoneme = str(result.get("expected_phoneme", "")).strip().upper()
+        if not phoneme or phoneme in focus_phonemes:
+            continue
+        focus_phonemes.append(phoneme)
+        if len(focus_phonemes) >= limit:
+            break
+
+    return focus_phonemes
+
+
 async def resolve_practice_context(
     *,
     user_id: int | None,
@@ -92,7 +118,9 @@ async def persist_personalization_state(
             user_id,
             executor=io_executor,
         )
-        focus_phonemes = [entry["phoneme"] for entry in personalization_summary["focus_phonemes"]]
+        summary_focus_phonemes = [entry["phoneme"] for entry in personalization_summary["focus_phonemes"]]
+        attempt_focus_phonemes = derive_attempt_focus_phonemes(scoring_payload["phoneme_results"])
+        focus_phonemes = attempt_focus_phonemes or summary_focus_phonemes
         next_target_text = target_text_manager.next_target_for_focus(focus_phonemes)
         return personalization_summary, focus_phonemes, next_target_text
 

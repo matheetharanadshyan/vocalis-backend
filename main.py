@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -464,6 +465,48 @@ async def safe_send_json(websocket: WebSocket, payload: dict) -> bool:
         return False
 
 
+def build_target_assignment_payload(
+    target_text_manager: TargetTextManager,
+    target_text: dict,
+    focus_phonemes: list[str],
+    *,
+    reason: str,
+    message: str,
+) -> dict:
+    focus_matches = target_text_manager.match_focus_phonemes(
+        target_text["text"],
+        focus_phonemes,
+    )
+    return {
+        "type": "target.assigned",
+        "message": message,
+        "reason": reason,
+        "target_text": target_text["text"],
+        "target_difficulty": target_text["difficulty"],
+        "selection_reason": (
+            f"Chosen to help with /{focus_matches[0]}/."
+            if focus_matches
+            else None
+        ),
+    }
+
+
+def parse_pronunciation_socket_command(payload: str) -> str | None:
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    command_type = parsed.get("type")
+    if not isinstance(command_type, str):
+        return None
+
+    return command_type
+
+
 async def safe_preload_runtime_dependencies() -> None:
     await preload_assessment_dependencies(
         run_timed_blocking=run_timed_blocking,
@@ -486,7 +529,7 @@ async def pronunciation_socket(websocket: WebSocket) -> None:
         executor=io_executor,
     )
     user_id = int(authenticated_user[0]) if authenticated_user is not None else None
-    personalization_summary, focus_phonemes, current_target_text, current_target_focus_matches = await resolve_practice_context(
+    personalization_summary, focus_phonemes, current_target_text, _current_target_focus_matches = await resolve_practice_context(
         user_id=user_id,
         target_text_manager=target_text_manager,
         run_timed_blocking=run_timed_blocking,
@@ -506,25 +549,65 @@ async def pronunciation_socket(websocket: WebSocket) -> None:
 
     sent = await safe_send_json(
         websocket,
-        {
-            "type": "target.assigned",
-            "message": "Initial Target Text Assigned.",
-            "reason": "initial",
-            "target_text": current_target_text["text"],
-            "target_difficulty": current_target_text["difficulty"],
-            "selection_reason": (
-                f"Chosen to help with /{current_target_focus_matches[0]}/."
-                if current_target_focus_matches
-                else None
-            ),
-        },
+        build_target_assignment_payload(
+            target_text_manager,
+            current_target_text,
+            focus_phonemes,
+            reason="initial",
+            message="Initial Target Text Assigned.",
+        ),
     )
     if not sent:
         return
 
     try:
         while True:
-            audio_bytes = await websocket.receive_bytes()
+            event = await websocket.receive()
+            if event["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect
+
+            command_payload = event.get("text")
+            if command_payload is not None:
+                command_type = parse_pronunciation_socket_command(command_payload)
+                if command_type != "target.next.request":
+                    sent = await safe_send_json(
+                        websocket,
+                        {
+                            "type": "audio.error",
+                            "message": "Unsupported websocket command.",
+                        },
+                    )
+                    if not sent:
+                        return
+                    continue
+
+                current_target_text = target_text_manager.next_target_for_focus(focus_phonemes)
+                sent = await safe_send_json(
+                    websocket,
+                    build_target_assignment_payload(
+                        target_text_manager,
+                        current_target_text,
+                        focus_phonemes,
+                        reason="manual",
+                        message="Manual Target Text Assigned.",
+                    ),
+                )
+                if not sent:
+                    return
+                continue
+
+            audio_bytes = event.get("bytes")
+            if audio_bytes is None:
+                sent = await safe_send_json(
+                    websocket,
+                    {
+                        "type": "audio.error",
+                        "message": "Unsupported websocket payload.",
+                    },
+                )
+                if not sent:
+                    return
+                continue
 
             sent = await safe_send_json(
                 websocket,
@@ -638,26 +721,17 @@ async def pronunciation_socket(websocket: WebSocket) -> None:
                 if not sent:
                     return
 
-            next_target_focus_matches = target_text_manager.match_focus_phonemes(
-                next_target_text["text"],
-                focus_phonemes,
-            )
             current_target_text = next_target_text
 
             sent = await safe_send_json(
                 websocket,
-                {
-                    "type": "target.assigned",
-                    "message": "Next Target Text Assigned.",
-                    "reason": "next",
-                    "target_text": current_target_text["text"],
-                    "target_difficulty": current_target_text["difficulty"],
-                    "selection_reason": (
-                        f"Chosen to help with /{next_target_focus_matches[0]}/."
-                        if next_target_focus_matches
-                        else None
-                    ),
-                },
+                build_target_assignment_payload(
+                    target_text_manager,
+                    current_target_text,
+                    focus_phonemes,
+                    reason="next",
+                    message="Next Target Text Assigned.",
+                ),
             )
             if not sent:
                 return
