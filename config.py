@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     default_websocket_sample_rate: int = Field(default=48000)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8000)
-    cors_allowed_origins: str = Field(default="http://localhost:5173,http://127.0.0.1:5173")
+    cors_allowed_origins: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:3000,http://127.0.0.1:3000"
+    )
     trim_top_db: int = Field(default=25)
     max_audio_duration_seconds: float = Field(default=15.0)
     min_audio_duration_seconds: float = Field(default=0.3)

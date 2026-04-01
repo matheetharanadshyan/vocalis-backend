@@ -29,7 +29,7 @@ def _ensure_nltk_resource(
     for download_name in download_names:
         try:
             download_succeeded = bool(nltk_module.download(download_name, quiet=True))
-        except Exception as error:  # pragma: no cover - defensive guard for downloader failures
+        except Exception as error:
             download_errors.append(f"{download_name}: {error}")
             continue
 
